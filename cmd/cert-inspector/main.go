@@ -6,8 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/kakeetopius/sec-tools/internal/util"
 	"github.com/pterm/pterm"
@@ -15,8 +18,10 @@ import (
 )
 
 type Options struct {
-	pem   bool
-	chain bool
+	pem    bool
+	chain  bool
+	pubkey bool
+	verify bool
 }
 
 type TLSServer struct {
@@ -32,13 +37,15 @@ func main() {
 		return
 	}
 	servers := dialServers(hostNames)
-	printTLSServerDetails(servers, &options)
+	displayTLSServerDetails(servers, &options)
 }
 
 func parseArgs() ([]string, Options, error) {
 	flagSet := pflag.NewFlagSet("cert-inspector", pflag.ExitOnError)
-	pem := flagSet.BoolP("pem", "p", false, "Print the certificate chain in pem format")
-	chain := flagSet.BoolP("chain", "c", false, "Print full certificate chain")
+	pem := flagSet.Bool("pem", false, "Print the certificate chain in pem format")
+	chain := flagSet.Bool("chain", false, "Print full certificate chain")
+	pubkey := flagSet.Bool("pubkey", false, "Print the public key only in pem format")
+	verify := flagSet.Bool("verify", false, "Verify the leaf certificate using the intermediate certificates returned")
 
 	flagSet.Usage = util.UsageFunc("cert-inspector", "hosts", flagSet.FlagUsages(), "Host Names should be provided in the format hostname:port")
 	err := flagSet.Parse(os.Args[1:])
@@ -51,8 +58,10 @@ func parseArgs() ([]string, Options, error) {
 		return nil, Options{}, fmt.Errorf("no hostname or ip address provided")
 	}
 	return args, Options{
-		pem:   *pem,
-		chain: *chain,
+		pem:    *pem,
+		chain:  *chain,
+		pubkey: *pubkey,
+		verify: *verify,
 	}, nil
 }
 
@@ -62,15 +71,22 @@ func dialServers(hosts []string) []TLSServer {
 		server := TLSServer{
 			Name: host,
 		}
-		conn, err := tls.Dial("tcp", host, &tls.Config{
-			InsecureSkipVerify: true,
-		})
+		dialer := tls.Dialer{
+			NetDialer: &net.Dialer{
+				Timeout: 2 * time.Second,
+			},
+			Config: &tls.Config{
+				InsecureSkipVerify: true,
+			},
+		}
+		conn, err := dialer.Dial("tcp", host)
 		if err != nil {
 			server.Error = err
 			servers = append(servers, server)
 			continue
 		}
-		certs := conn.ConnectionState().PeerCertificates
+		tlsConn := conn.(*tls.Conn)
+		certs := tlsConn.ConnectionState().PeerCertificates
 		server.PeerCertificates = certs
 		servers = append(servers, server)
 		conn.Close()
@@ -79,7 +95,7 @@ func dialServers(hosts []string) []TLSServer {
 	return servers
 }
 
-func printTLSServerDetails(servers []TLSServer, options *Options) {
+func displayTLSServerDetails(servers []TLSServer, options *Options) {
 	headerStyle := pterm.NewStyle(pterm.FgBlue, pterm.Bold)
 	errStr := strings.Builder{}
 
@@ -89,21 +105,42 @@ func printTLSServerDetails(servers []TLSServer, options *Options) {
 			fmt.Fprintf(&errStr, "Error for %v -> %v", name, server.Error)
 			continue
 		}
-		headerStyle.Println(name)
+		if len(servers) > 1 {
+			headerStyle.Println(name)
+		}
 
+		certPool := x509.NewCertPool()
 		for i, cert := range server.PeerCertificates {
+			certPool.AddCert(cert)
 			if !options.chain && i != 0 {
-				break
-			}
-			if options.pem {
-				printPEMCert(cert, i+1)
 				continue
 			}
-			err := printCertTable(cert, i+1)
-			if err != nil {
-				fmt.Fprintf(&errStr, "Error for %v -> %v", name, err)
+			if options.pem {
+				printPEMCert(cert)
+			} else if options.pubkey {
+				printCertPubKey(cert)
+			} else {
+				err := printCertTable(cert, i+1)
+				if err != nil {
+					fmt.Fprintf(&errStr, "Error for %v -> %v", name, err)
+				}
 			}
 		}
+
+		if options.verify {
+			err := verifyCertificate(server.PeerCertificates[0], certPool)
+			fmt.Print("Verfication Status: ")
+			if err != nil {
+				errString := err.Error()
+				if strings.Contains(errString, ":") {
+					errString = strings.TrimSpace(strings.Split(errString, ":")[1])
+				}
+				fmt.Println("[✘] Failed -> ", errString)
+			} else {
+				fmt.Println("[✔] Successfully verified")
+			}
+		}
+		fmt.Println()
 	}
 
 	if errStr.String() != "" {
@@ -134,6 +171,18 @@ func printCertTable(cert *x509.Certificate, certIndex int) error {
 	tableData = append(tableData, []string{"Public Key", pubKeyStr})
 	tableData = append(tableData, []string{"Signature Algorithm", cert.SignatureAlgorithm.String()})
 	tableData = append(tableData, []string{"Signature", wrapString(hex.EncodeToString(cert.Signature), 50)})
+	if len(cert.EmailAddresses) > 0 {
+		tableData = append(tableData, []string{"Email Addresses", strings.Join(cert.EmailAddresses, ", ")})
+	}
+	if len(cert.DNSNames) > 0 {
+		tableData = append(tableData, []string{"DNS Names", strings.Join(cert.DNSNames, "\n")})
+	}
+	if len(cert.IPAddresses) > 0 {
+		tableData = append(tableData, []string{"IP Addresses", strings.Join(IPsToStringSlice(cert.IPAddresses), ", ")})
+	}
+	if len(cert.URIs) > 0 {
+		tableData = append(tableData, []string{"URIs", strings.Join(URIsToStringSlice(cert.URIs), ", ")})
+	}
 	tableData = append(tableData, []string{"Valid From", cert.NotBefore.String()})
 	tableData = append(tableData, []string{"Valid To", cert.NotAfter.String()})
 
@@ -143,15 +192,48 @@ func printCertTable(cert *x509.Certificate, certIndex int) error {
 	return nil
 }
 
-func printPEMCert(cert *x509.Certificate, certIndex int) {
-	certStyle := pterm.NewStyle(pterm.FgYellow)
-	name := certStyle.Sprintf("Certificate %v", certIndex)
-	fmt.Println(name)
+func printCertPubKey(cert *x509.Certificate) {
+	pubkey := pem.EncodeToMemory(&pem.Block{
+		Type:  "PUBLIC KEY",
+		Bytes: cert.RawSubjectPublicKeyInfo,
+	})
+	fmt.Println(string(pubkey))
+}
+
+func printPEMCert(cert *x509.Certificate) {
 	pemCert := pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: cert.Raw,
 	})
 	fmt.Println(string(pemCert))
+}
+
+func verifyCertificate(leaf *x509.Certificate, intermediates *x509.CertPool) error {
+	_, err := leaf.Verify(x509.VerifyOptions{
+		Intermediates: intermediates,
+	})
+
+	return err
+}
+
+func IPsToStringSlice(ips []net.IP) []string {
+	ipsAsStr := make([]string, 0, len(ips))
+
+	for _, ip := range ips {
+		ipsAsStr = append(ipsAsStr, ip.String())
+	}
+
+	return ipsAsStr
+}
+
+func URIsToStringSlice(URIs []*url.URL) []string {
+	uriStrs := make([]string, 0, len(URIs))
+
+	for _, url := range URIs {
+		uriStrs = append(uriStrs, url.String())
+	}
+
+	return uriStrs
 }
 
 func wrapString(s string, width int) string {

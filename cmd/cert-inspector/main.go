@@ -129,7 +129,7 @@ func displayTLSServerDetails(servers []TLSServer, options *Options) {
 
 		if options.verify {
 			err := verifyCertificate(server.PeerCertificates[0], certPool)
-			fmt.Print("Verfication Status: ")
+			fmt.Print("Verification Status: ")
 			if err != nil {
 				errString := err.Error()
 				if strings.Contains(errString, ":") {
@@ -162,15 +162,19 @@ func printCertTable(cert *x509.Certificate, certIndex int) error {
 		return err
 	}
 	pubKeyStr := wrapString(hex.EncodeToString(pubkey), 50)
-	tableData = append(tableData, []string{name})
-	tableData = append(tableData, []string{"Version", fmt.Sprint(cert.Version)})
-	tableData = append(tableData, []string{"Serial Number", cert.SerialNumber.Text(16)})
-	tableData = append(tableData, []string{"Subject", wrapString(cert.Subject.String(), 50)})
-	tableData = append(tableData, []string{"Issuer", wrapString(cert.Issuer.String(), 50)})
-	tableData = append(tableData, []string{"Subject Public Key Algorithm", cert.PublicKeyAlgorithm.String()})
-	tableData = append(tableData, []string{"Public Key", pubKeyStr})
-	tableData = append(tableData, []string{"Signature Algorithm", cert.SignatureAlgorithm.String()})
-	tableData = append(tableData, []string{"Signature", wrapString(hex.EncodeToString(cert.Signature), 50)})
+	commonData := [][]string{
+		{name},
+		{"Version", fmt.Sprint(cert.Version)},
+		{"Serial Number", cert.SerialNumber.Text(16)},
+		{"Subject", wrapString(cert.Subject.String(), 50)},
+		{"Issuer", wrapString(cert.Issuer.String(), 50)},
+		{"Subject Public Key Algorithm", cert.PublicKeyAlgorithm.String()},
+		{"Public Key", pubKeyStr},
+		{"Signature Algorithm", cert.SignatureAlgorithm.String()},
+		{"Signature", wrapString(hex.EncodeToString(cert.Signature), 50)},
+	}
+	tableData = append(tableData, commonData...)
+
 	if len(cert.EmailAddresses) > 0 {
 		tableData = append(tableData, []string{"Email Addresses", strings.Join(cert.EmailAddresses, ", ")})
 	}

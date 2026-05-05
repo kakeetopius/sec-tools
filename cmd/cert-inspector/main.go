@@ -32,10 +32,8 @@ type TLSServer struct {
 
 func main() {
 	hostNames, options, err := parseArgs()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
-	}
+	util.CheckErr(err)
+
 	servers := dialServers(hostNames)
 	displayTLSServerDetails(servers, &options)
 }
@@ -47,7 +45,7 @@ func parseArgs() ([]string, Options, error) {
 	pubkey := flagSet.Bool("pubkey", false, "Print the public key only in pem format")
 	verify := flagSet.Bool("verify", false, "Verify the leaf certificate using the intermediate certificates returned")
 
-	flagSet.Usage = util.UsageFunc("cert-inspector", "hosts", flagSet.FlagUsages(), "Host Names should be provided in the format hostname:port")
+	flagSet.Usage = util.UsageFunc("cert-inspector", "hosts...", flagSet.FlagUsages(), "Host Names should be provided in the format hostname:port")
 	err := flagSet.Parse(os.Args[1:])
 	if err != nil {
 		return nil, Options{}, err

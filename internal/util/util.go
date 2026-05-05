@@ -2,7 +2,11 @@
 package util
 
 import (
+	"errors"
 	"fmt"
+	"os"
+
+	"github.com/spf13/pflag"
 )
 
 func UsageFunc(commandName, positionalArgsName, flagHelpOutput, description string) func() {
@@ -25,5 +29,19 @@ func UsageFunc(commandName, positionalArgsName, flagHelpOutput, description stri
 			fmt.Println("\nOptions: ")
 			fmt.Println(flagHelpOutput)
 		}
+	}
+}
+
+// CheckErr exits the program with a non-zero status when err is not nil.
+// pflag.ErrHelp is treated specially and exits cleanly without printing an error.
+func CheckErr(err error) {
+	if err != nil {
+		returnCode := 0
+		if !errors.Is(err, pflag.ErrHelp) {
+			// no need to print to error message for the above
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			returnCode = -1
+		}
+		os.Exit(returnCode)
 	}
 }
